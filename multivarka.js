@@ -2,17 +2,17 @@
 var MongoClient = require('mongodb').MongoClient;
 
 function setUrlDB(urlDB) {
-    this.urlDB = urlDB;
+    this._urlDB = urlDB;
     return this;
 }
 
 function setCollectionName(name) {
-    this.collectionName = name;
+    this._collectionName = name;
     return this;
 }
 
 function setFieldName(name) {
-    this.queryArray.push({
+    this._queryArray.push({
         field: name,
         value: {},
         negative: false
@@ -21,15 +21,15 @@ function setFieldName(name) {
 }
 
 function changeNegative() {
-    var lastQuery = this.queryArray.pop();
+    var lastQuery = this._queryArray.pop();
     lastQuery.negative = lastQuery.negative ? false : true;
-    this.queryArray.push(lastQuery);
+    this._queryArray.push(lastQuery);
     return this;
 }
 
-function setQueryOperation(data, name) {
+function setOperation(data, name) {
     var operation = '';
-    var lastQuery = this.queryArray.pop();
+    var lastQuery = this._queryArray.pop();
     switch (name) {
         case 'equal':
             operation = lastQuery.negative ? '$ne' : '$eq';
@@ -44,50 +44,78 @@ function setQueryOperation(data, name) {
             operation = lastQuery.negative ? '$nin' : '$in';
             break;
     }
-    lastQuery.value[operation] = data;
-    this.queryArray.push(lastQuery);
+    var tempQuery = {};
+    tempQuery[operation] = data;
+    lastQuery.value[lastQuery.field] = tempQuery;
+    this._queryArray.push(lastQuery);
+    return this;
 }
 
-function findQuery(callback) {
-    var finalQuery = this.queryArray.reduce(function (query, current) {
-        query[current.field] = current.value;
+function makeQuery(array) {
+    return array.reduce(function (query, current) {
+        query['$or'].push(current.value);
         return query;
-    }, {});
-    MongoClient.connect(this.urlDB, (function (error, db) {
-        var collection = db.collection(this.collectionName);
-        collection.find(finalQuery).toArray(function (error, data) {
-            callback(error, data);
+    }, {$or: []});
+}
+
+function dbAction(query, type, callback) {
+    MongoClient.connect(this._urlDB, (function (error, db) {
+        var collection = db.collection(this._collectionName);
+        var method = null;
+        switch (type) {
+            case 'find':
+                method = function (callback) {
+                    collection.find(query).toArray(callback);
+                };
+                break;
+            case 'insert':
+                method = function (callback) {
+                    collection.insertOne(query).then(callback);
+                };
+                break;
+            case 'remove':
+                method = function (callback) {
+                    collection.deleteMany(query).then(callback);
+                };
+                break;
+        }
+        method.call(this, function (error, result) {
+            callback(error, result);
             db.close();
         });
     }).bind(this));
-    this.queryArray = [];
+    this._queryArray = [];
     return this;
 }
 
 module.exports = {
-    urlDB: '',
-    collectionName: '',
-    queryArray: [],
+    _urlDB: '',
+    _collectionName: '',
+    _queryArray: [],
 
     server: setUrlDB,
     collection: setCollectionName,
     where: setFieldName,
     not: changeNegative,
     equal: function (data) {
-        setQueryOperation.call(this, data, 'equal');
-        return this;
+        return setOperation.call(this, data, 'equal');
     },
     lessThan: function (data) {
-        setQueryOperation.call(this, data, 'lessThan');
-        return this;
+        return setOperation.call(this, data, 'lessThan');
     },
     greatThan: function (data) {
-        setQueryOperation.call(this, data, 'greatThan');
-        return this;
+        return setOperation.call(this, data, 'greatThan');
     },
     include: function (data) {
-        setQueryOperation.call(this, data, 'include');
-        return this;
+        return setOperation.call(this, data, 'include');
     },
-    find: findQuery
+    find: function (callback) {
+        return dbAction.call(this, makeQuery(this._queryArray), 'find', callback);
+    },
+    insert: function (data, callback) {
+        return dbAction.call(this, data, 'insert', callback);
+    },
+    remove: function (callback) {
+        return dbAction.call(this, {}, 'remove', callback);
+    }
 };
